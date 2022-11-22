@@ -1,230 +1,235 @@
 package dev.kason.konfig
 
 import com.typesafe.config.Config
+import com.typesafe.config.ConfigException
 import com.typesafe.config.ConfigList
 import com.typesafe.config.ConfigMemorySize
 import com.typesafe.config.ConfigObject
 import com.typesafe.config.ConfigValue
 import java.time.*
 import java.time.temporal.TemporalAmount
+import java.util.*
 import kotlin.reflect.*
 import kotlin.reflect.full.*
 
 /**
- * Evaluators are used to convert a value at a path for a [Config] to a type.
- * If they are unable to convert the value, they should return null.
+ * A Config evaluator attempts to convert a config value (represented through a [Config] and
+ * path) to a specified type. If an evaluator is unable to do so, it should return `null`.
+ * If this evaluator throws an error, it will be interpreted as being unable to convert the
+ * given value.
  *
- * Custom evaluators can be registered using [addConfigEvaluator].
+ * Config evaluators can be registered through [registerEvaluator] in order to add support
+ * for custom types.
+ *
+ * @see registerEvaluator
  * */
-typealias Evaluator = Config.(path: String) -> Any?
+typealias ConfigEvaluator<T> = Config.(key: String) -> T?
 
-/**
- * Evaluator priority determines the order in which evaluators are called.
- *
- * By default, evaluators are registered with [Medium] priority.
- *
- * The way in which the evaluators are called is as follows:
- *
- * ```
- *
- * get()
- *      -> <checks existence of value>
- *      -> [Highest]
- *      -> <default>
- *      -> [Medium]
- *      -> <enums, lists>
- *      -> Lowest
- *
- * ```
- * */
-enum class EvaluatorPriority {
-    /**
-     * Evaluators are evaluated immediately.
-     * */
-    Highest,
+@PublishedApi
+internal val evaluators: MutableMap<KType, ConfigEvaluator<*>> = hashMapOf()
 
-    /**
-     * Evaluators are evaluated after default evaluators.
-     * */
-    Medium,
-
-    /**
-     * Evaluators are evaluated after every other evaluator.
-     * */
-    Lowest;
-
-    // ignore this... internal values
-    internal val listOfEvaluators = mutableListOf<Evaluator>()
-
-    @Deprecated("This is an internal function", level = DeprecationLevel.WARNING)
-    fun <T> execute(config: Config, path: String): T? {
-        fun Evaluator.execute(): Any? {
-            val value: Any?
-            try {
-                value = this(config, path)
-            } catch (e: Exception) {
-                return null
-            }
-            return value
-        }
-
-        for (evaluator in listOfEvaluators) {
-            val value = evaluator.execute()
-            if (value != null) {
-                try {
-                    @Suppress("UNCHECKED_CAST")
-                    return value as T
-                } catch (e: Exception) {
-                    continue
-                }
-            }
+@PublishedApi
+internal class CompositeEvaluator<T>(val evaluators: MutableList<ConfigEvaluator<T>>) : (Config, String) -> T? {
+    override fun invoke(config: Config, key: String): T? = with(config) {
+        for (evaluator in evaluators) {
+            val result = kotlin.runCatching { evaluator(this, key) }.getOrNull()
+            if (result != null) return@with result
         }
         return null
     }
 }
 
 /**
- * Adds a new evaluator with the specified priority.
+ * This function takes in an [evaluator] and registers it to the specified type [T].
+ * The evaluator will be called whenever a value of type [T] is needed from the config.
+ * Because types are used instead of classes, users don't have to worry about generics.
  *
- * See [EvaluatorPriority] for more information.
+ * Multiple evaluators can be registered to the same type. In that case, evaluators will be
+ * executed in the order that they are registered.
  *
+ * Here's an example:
+ * ```
+ * registerEvaluator {
+ *    UUID.fromString(this[it])
+ * }
+ * ```
+ *
+ * In this case, Kotlin will be able to infer that the [ConfigEvaluator] type is [UUID] and
+ * will register it to that type. Whenever a `UUID` object is needed from the config,
+ * users can simply do:
+ * ```
+ * val uuid: UUID = config["path"]
+ * ```
+ *
+ * This allows for support for custom types, reducing boilerplate code.
+ *
+ * @see get
  * */
-fun addConfigEvaluator(
-    evaluatorPriority: EvaluatorPriority = EvaluatorPriority.Medium,
-    block: Evaluator
-) {
-    evaluatorPriority.listOfEvaluators.add(block)
+inline fun <reified T> registerEvaluator(noinline evaluator: ConfigEvaluator<T>) {
+    val type = typeOf<T>()
+    if (evaluators[type] != null) {
+        val existingEvaluator = evaluators[type]!!
+        if (existingEvaluator is CompositeEvaluator<*>) {
+            @Suppress("UNCHECKED_CAST")
+            existingEvaluator as CompositeEvaluator<T>
+            existingEvaluator.evaluators += evaluator
+        } else {
+            val newEvaluator = CompositeEvaluator(mutableListOf(existingEvaluator, evaluator))
+            evaluators[type] = newEvaluator
+        }
+        return
+    }
+    evaluators[type] = evaluator
 }
 
 /**
- * Returns the value at the specified [path] in the specified type [T].
+ * This function takes in a given [key] and type [T] and attempts to convert
+ * the value from the config for the given [key] into the specified type.
  *
- * All default [Config] types, such as [String], [Long], [Duration], etc. are supported.
+ * By default, types with a getter in place in the [Config] class are supported
+ * already ([String], [Long], [Duration], etc.)
  *
- * If you want to add support for custom types, you can use [addConfigEvaluator].
+ * If you wish to add support for a type that doesn't already exist, consider
+ * you'll need to register an evaluator through [registerEvaluator].
  *
- * This function returns null if the value is not present or if the value cannot be converted to the specified type.
+ * This function will return `null` if no value can be found in the config, or
+ * the value present can't be converted into the specified type.
+ * If the value is required, look into [require], which throws an error if the
+ * value can't be found.
  *
  * Usage:
  * ```
  *
- * val isDebug: Boolean = config["debug"]
- * val port: Int = config["port"]
+ * val stringValue: String? = config["path"]
+ * val intValue: Int? = config["non-existent-path"] // will return null
+ *
+ * val unsupportedType: UnsupportedType? = config["path"] // will return null, unless an evaluator is registered.
+ *
+ * // you can also do this:
+ *
+ * val stringValue = config.get<String>("path")
  * ```
  *
+ * @see registerEvaluator
+ * @see require
+ * @throws ConfigException.BadPath if the given [key] isn't a valid path.
+ * See [Config.hasPath] for more information regarding this exception.
  * */
-@Suppress("UNCHECKED_CAST")
-inline operator fun <reified T> Config.get(path: String): T? {
-    if (!hasPath(path)) return null
+inline operator fun <reified T> Config.get(key: String): T? {
+    if (!hasPath(key)) return null
     val expectedClassType = T::class
-    EvaluatorPriority.Highest.execute<T>(this, path)?.let { return it }
-    // default
     when (expectedClassType) {
-        String::class -> return getString(path) as T
-        Int::class -> return getInt(path) as T
-        Long::class -> return getLong(path) as T
-        Double::class -> return getDouble(path) as T
-        Boolean::class -> return getBoolean(path) as T
-        Duration::class -> return getDuration(path) as T
-        ConfigMemorySize::class -> return getMemorySize(path) as T
-        Period::class -> return getPeriod(path) as T
-        // interfaces or not concrete classes
-        Number::class -> return getNumber(path) as T
-        Config::class -> return getConfig(path) as T
-        ConfigObject::class -> return getObject(path) as T
-        ConfigValue::class -> return getValue(path) as T
-        TemporalAmount::class -> return getTemporal(path) as T
-        ConfigList::class -> return getList(path) as T
+        String::class -> return getString(key) as T
+        Int::class -> return getInt(key) as T
+        Long::class -> return getLong(key) as T
+        Double::class -> return getDouble(key) as T
+        Boolean::class -> return getBoolean(key) as T
+        ConfigMemorySize::class -> return getMemorySize(key) as T
+        ConfigObject::class -> return getObject(key) as T
+        ConfigList::class -> return getList(key) as T
+        ConfigValue::class -> return getValue(key) as T
+        Config::class -> return getConfig(key) as T
+        Duration::class -> return getDuration(key) as T
+        Period::class -> return getPeriod(key) as T
+        TemporalAmount::class -> return getTemporal(key) as T
     }
-    EvaluatorPriority.Medium.execute<T>(this, path)?.let { return it }
     if (expectedClassType.isSubclassOf(Enum::class)) {
-        val enum = getEnum(expectedClassType.java as Class<out Enum<*>>, path)
-        return enum as T
+        @Suppress("UNCHECKED_CAST")
+        return getEnum(expectedClassType.java as Class<out Enum<*>>, key) as T
     }
     val type = typeOf<T>()
     when (type) {
-        typeOf<List<Boolean>>() -> return getBooleanList(path) as T
-        typeOf<List<Int>>() -> return getIntList(path) as T
-        typeOf<List<Long>>() -> return getLongList(path) as T
-        typeOf<List<Double>>() -> return getDoubleList(path) as T
-        typeOf<List<String>>() -> return getStringList(path) as T
-        typeOf<List<Duration>>() -> return getDurationList(path) as T
-        typeOf<List<ConfigMemorySize>>() -> return getMemorySizeList(path) as T
+        typeOf<List<Boolean>>() -> return getBooleanList(key) as T
+        typeOf<List<Int>>() -> return getIntList(key) as T
+        typeOf<List<Long>>() -> return getLongList(key) as T
+        typeOf<List<Double>>() -> return getDoubleList(key) as T
+        typeOf<List<String>>() -> return getStringList(key) as T
+        typeOf<List<Duration>>() -> return getDurationList(key) as T
+        typeOf<List<ConfigMemorySize>>() -> return getMemorySizeList(key) as T
     }
     if (type.isSubtypeOf(typeOf<List<Enum<*>>>())) {
-        val enumList = getEnumList(expectedClassType.java as Class<out Enum<*>>, path)
-        return enumList as T
+        @Suppress("UNCHECKED_CAST")
+        return getEnumList(expectedClassType.java as Class<out Enum<*>>, key) as T
     }
-    EvaluatorPriority.Lowest.execute<T>(this, path)?.let { return it }
-    return null
+    val evaluator = evaluators[type] ?: return null
+    return kotlin.runCatching { evaluator(this, key) as? T }.getOrNull()
 }
 
 /**
- * Same as [Config.get] but throws an exception if the value is not present or if the value cannot be converted to the specified type.
+ * Same as [get] but will throw an [IllegalArgumentException] if the config is missing a value
+ * at the specified [path] or the value can't be converted to the type [T].
  *
- * Usage:
+ * Example:
+ * ```
+ * // throws exception if debug is not present
+ * val isDebug: Boolean = config.require("debug")
  * ```
  *
- * val isDebug: Boolean = config.require("debug") // throws exception if debug is not present
+ * If you wish to use a different message or exception class, you can write
+ * your own extension function.
  *
- * ```
+ * @see get
  * */
 inline fun <reified T> Config.require(path: String): T {
-    return get<T>(path) ?: throw IllegalArgumentException("Missing required configuration: $path")
+    return get<T>(path) ?: throw IllegalArgumentException("Missing required config value: $path")
 }
 
 /**
- * Renders the configuration as a string. Read [ConfigValue.render] for more information.
+ * Shortcut for `root().render()`. It renders the current config as
+ * a string with comments detailing where each config value is from.
  *
- * Mostly used for debugging purposes.
+ * This is mainly used for debugging.
+ *
+ * @see ConfigObject.render
  * */
 fun Config.renderAsString(): String = root().render()
 
 /**
- * Returns a [Lazy] delegate that will return the value at the specified [path] in the specified type [T].
+ * Provides a lazy delegate that returns the value at the specified [path] in the specified
+ * type [T]. If the value does not exist or cannot be converted, this delegate will return `null`.
  *
- * Supports everything that [Config.get] supports.
+ * The return value will be equivalent to calling [get].
  *
- * Usage:
+ * The [LazyThreadSafetyMode] can also be specified through the [mode] parameter.
+ *
+ * Sample usage:
  * ```
- * val isDebug: Boolean by config.lazy("debug") // will not be evaluated until isDebug is accessed
+ *
+ * val isDebug: Boolean? by config.lazy("debug")
+ * // or
+ * val isDebug by config.lazy<Boolean>("debug")
+ *
  * ```
+ *
+ * The value won't be calculated until the property is referenced.
+ *
+ * @see get
  * */
-inline fun <reified T> Config.lazy(path: String): Lazy<T?> = lazy { get<T>(path) }
+inline fun <reified T> Config.lazy(
+    path: String,
+    mode: LazyThreadSafetyMode = LazyThreadSafetyMode.SYNCHRONIZED
+): Lazy<T?> = lazy(mode) { get<T>(path) }
 
 /**
- * Returns a [Lazy] delegate that will return the value at the specified [path] in the specified type [T].
+ * Extension function that allows values to be retrieved lazily through the config.
  *
- * Supports everything that [Config.get] supports.
+ * The path of this function will simply be the name of the property.
  *
- * If the value is not present or if the value cannot be converted to the specified type, the specified [defaultValue] value will be returned.
+ * Unlike [lazy], the return value is guaranteed to be not null. If the value does not exist
+ * or cannot be converted into that type, an exception will be thrown, similar to [require].
  *
- * Usage:
  * ```
- * val isDebug: Boolean by config.lazy("debug", false) // default value is false
+ * val debug: Boolean by config // equal in value to config.require("debug")
  * ```
  *
- * */
-inline fun <reified T> Config.lazy(path: String, defaultValue: T): Lazy<T?> = lazy { get<T>(path) ?: defaultValue }
-
-/**
- * Returns the value of the config at the path determined by the name of the property.
- *
- * Usage:
- * ```
- * val value: String by config // same value as config["value"]
- * ```
+ * @see lazy
+ * @see require
  * */
 inline operator fun <reified T> Config.getValue(thisRef: Any?, property: KProperty<*>): T = require(property.name)
 
 /**
- * Returns a config that contains the values of both this config and the specified [other] config.
+ *  Syntactic sugar for [Config.withFallback]. Does the exact same thing.
  *
- * Read [Config.withFallback] for more information.
- *
- * Usage:
- * ```
- * val config = config1 + config2
- * ```
- * */
+ *  @see Config.withFallback
+ *  */
 operator fun Config.plus(other: Config): Config = this.withFallback(other)
