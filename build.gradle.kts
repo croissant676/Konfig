@@ -5,15 +5,17 @@ plugins {
 }
 
 group = "dev.kason"
-version = "1.0-SNAPSHOT"
+version = "0.0.1"
 
 repositories {
     mavenCentral()
 }
 
 dependencies {
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.4.0")
+    implementation("com.typesafe:config:1.4.2")
+    implementation("org.jetbrains.kotlin:kotlin-reflect:1.7.10")
     testImplementation(kotlin("test"))
+    testImplementation("io.kotest:kotest-runner-junit5:5.5.4")
 }
 
 tasks.test {
