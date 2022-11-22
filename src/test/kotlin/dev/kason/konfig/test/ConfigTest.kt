@@ -6,16 +6,12 @@ import java.util.*
 import kotlin.reflect.KProperty
 
 fun main() {
-
-    addConfigEvaluator {
-        
-    }
-
-
     val config = createConfig {
-        +ConfigSources.ParseString("""
+        +Parse(
+            """
             uuid = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
-        """.trimIndent())
+        """.trimIndent()
+        )
     }
 
     val uuid: UUID by config

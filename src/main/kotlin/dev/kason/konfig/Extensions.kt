@@ -89,7 +89,7 @@ inline fun <reified T> registerEvaluator(noinline evaluator: ConfigEvaluator<T>)
  * By default, types with a getter in place in the [Config] class are supported
  * already ([String], [Long], [Duration], etc.)
  *
- * If you wish to add support for a type that doesn't already exist, consider
+ * If you wish to add support for a type that doesn't already exist,
  * you'll need to register an evaluator through [registerEvaluator].
  *
  * This function will return `null` if no value can be found in the config, or
@@ -171,7 +171,7 @@ inline operator fun <reified T> Config.get(key: String): T? {
  * @see get
  * */
 inline fun <reified T> Config.require(path: String): T {
-    return get<T>(path) ?: throw IllegalArgumentException("Missing required config value: $path")
+    return get<T>(path) ?: throw IllegalArgumentException("Missing or cannot parse config value: $path")
 }
 
 /**
