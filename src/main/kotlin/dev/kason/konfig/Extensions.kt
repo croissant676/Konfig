@@ -45,7 +45,8 @@ internal class CompositeEvaluator<T>(val evaluators: MutableList<ConfigEvaluator
  * Because types are used instead of classes, users don't have to worry about generics.
  *
  * Multiple evaluators can be registered to the same type. In that case, evaluators will be
- * executed in the order that they are registered.
+ * executed in the order that they are registered. The first evaluator that returns a non-null
+ * value will be used.
  *
  * Here's an example:
  * ```
@@ -58,7 +59,7 @@ internal class CompositeEvaluator<T>(val evaluators: MutableList<ConfigEvaluator
  * will register it to that type. Whenever a `UUID` object is needed from the config,
  * users can simply do:
  * ```
- * val uuid: UUID = config["path"]
+ * val uuid: UUID? = config["path"]
  * ```
  *
  * This allows for support for custom types, reducing boilerplate code.
@@ -118,34 +119,42 @@ inline fun <reified T> registerEvaluator(noinline evaluator: ConfigEvaluator<T>)
 inline operator fun <reified T> Config.get(key: String): T? {
     if (!hasPath(key)) return null
     val expectedClassType = T::class
-    when (expectedClassType) {
-        String::class -> return getString(key) as T
-        Int::class -> return getInt(key) as T
-        Long::class -> return getLong(key) as T
-        Double::class -> return getDouble(key) as T
-        Boolean::class -> return getBoolean(key) as T
-        ConfigMemorySize::class -> return getMemorySize(key) as T
-        ConfigObject::class -> return getObject(key) as T
-        ConfigList::class -> return getList(key) as T
-        ConfigValue::class -> return getValue(key) as T
-        Config::class -> return getConfig(key) as T
-        Duration::class -> return getDuration(key) as T
-        Period::class -> return getPeriod(key) as T
-        TemporalAmount::class -> return getTemporal(key) as T
+    try {
+        when (expectedClassType) {
+            String::class -> return getString(key) as T
+            Int::class -> return getInt(key) as T
+            Long::class -> return getLong(key) as T
+            Double::class -> return getDouble(key) as T
+            Boolean::class -> return getBoolean(key) as T
+            ConfigMemorySize::class -> return getMemorySize(key) as T
+            ConfigObject::class -> return getObject(key) as T
+            ConfigList::class -> return getList(key) as T
+            ConfigValue::class -> return getValue(key) as T
+            Config::class -> return getConfig(key) as T
+            Duration::class -> return getDuration(key) as T
+            Period::class -> return getPeriod(key) as T
+            TemporalAmount::class -> return getTemporal(key) as T
+        }
+    } catch (e: ConfigException) {
+        return null
     }
     if (expectedClassType.isSubclassOf(Enum::class)) {
         @Suppress("UNCHECKED_CAST")
         return getEnum(expectedClassType.java as Class<out Enum<*>>, key) as T
     }
     val type = typeOf<T>()
-    when (type) {
-        typeOf<List<Boolean>>() -> return getBooleanList(key) as T
-        typeOf<List<Int>>() -> return getIntList(key) as T
-        typeOf<List<Long>>() -> return getLongList(key) as T
-        typeOf<List<Double>>() -> return getDoubleList(key) as T
-        typeOf<List<String>>() -> return getStringList(key) as T
-        typeOf<List<Duration>>() -> return getDurationList(key) as T
-        typeOf<List<ConfigMemorySize>>() -> return getMemorySizeList(key) as T
+    try {
+        when (type) {
+            typeOf<List<Boolean>>() -> return getBooleanList(key) as T
+            typeOf<List<Int>>() -> return getIntList(key) as T
+            typeOf<List<Long>>() -> return getLongList(key) as T
+            typeOf<List<Double>>() -> return getDoubleList(key) as T
+            typeOf<List<String>>() -> return getStringList(key) as T
+            typeOf<List<Duration>>() -> return getDurationList(key) as T
+            typeOf<List<ConfigMemorySize>>() -> return getMemorySizeList(key) as T
+        }
+    } catch (e: ConfigException) {
+        return null
     }
     if (type.isSubtypeOf(typeOf<List<Enum<*>>>())) {
         @Suppress("UNCHECKED_CAST")
@@ -217,6 +226,8 @@ inline fun <reified T> Config.lazy(
  *
  * Unlike [lazy], the return value is guaranteed to be not null. If the value does not exist
  * or cannot be converted into that type, an exception will be thrown, similar to [require].
+ *
+ * Usage:
  *
  * ```
  * val debug: Boolean by config // equal in value to config.require("debug")
