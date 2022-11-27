@@ -51,7 +51,7 @@ internal class CompositeEvaluator<T>(val evaluators: MutableList<ConfigEvaluator
  * Here's an example:
  * ```
  * registerEvaluator {
- *    UUID.fromString(this[it])
+ *    UUID.fromString(this[it] ?: return@registerEvaluator null)
  * }
  * ```
  *

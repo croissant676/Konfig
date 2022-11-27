@@ -123,4 +123,16 @@ class ConfigTest : StringSpec({
         config.get<Int>("c.e") shouldBe null
 
     }
+
+    "config list" {
+        val config = createConfig {
+            +ConfigSource.Parse(
+                """
+                    a = [sdf, 23d2s, 3as4]
+                """.trimIndent()
+            )
+        }
+        config.get<List<Int>>("a") shouldBe null
+        config.get<List<String>>("a") shouldBe listOf("sdf", "23d2s", "3as4")
+    }
 })
